@@ -19,7 +19,7 @@ from debias.utils.utils import (AverageMeter, MultiDimAverageMeter, accuracy,
 
 def parse_option():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_name', type=str, default='test', )
+    parser.add_argument('--exp_name', type=str, default='hard_corrected')
     parser.add_argument('--gpu', type=int, default=0)
 
     parser.add_argument('--print_freq', type=int, default=300,
@@ -40,8 +40,12 @@ def parse_option():
     parser.add_argument('--ratio', type=int, default=10)
     parser.add_argument('--aug', type=int, default=1)
     parser.add_argument('--bb', type=int, default=0)
+    
+    parser.add_argument('--negative_sampling', type=str, default='hard')
+    parser.add_argument('--beta', type=float, default=0.5)
 
     opt = parser.parse_args()
+    assert opt.negative_sampling in ['original', 'debiased', 'hard'], "'negative_sampling' has to be 'original', 'debiased' or 'hard'."
     os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpu)
 
     return opt
@@ -51,7 +55,9 @@ def set_model(train_loader, opt):
     model = SimpleConvNet().cuda()
     criterion = BiasContrastiveLoss(
         confusion_matrix=train_loader.dataset.confusion_matrix,
-        bb=opt.bb)
+        bb=opt.bb,
+        negative_sampling=opt.negative_sampling,
+        beta=opt.beta)
 
     return model, criterion
 
@@ -127,7 +133,9 @@ def validate(val_loader, model):
 def main():
     opt = parse_option()
 
-    exp_name = f'bc-bb{opt.bb}-color_mnist_corr{opt.corr}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}'
+    exp_name = (f'bc-bb{opt.bb}-color_mnist_corr{opt.corr}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-'+ 
+                f'cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}-'+
+                f'neg_sampling_{opt.negative_sampling}-beta{opt.beta}')
     opt.exp_name = exp_name
 
     output_dir = f'exp_results/{exp_name}'
@@ -192,6 +200,11 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=opt.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=decay_epochs, gamma=0.1)
     logging.info(f"decay_epochs: {decay_epochs}")
+
+
+    #checkpoint = torch.load('exp_results/bc-bb0-color_mnist_corr0.999-test-lr0.001-bs128-cbs64-w0.01-ratio10-aug1-seed1/checkpoints/last.pth')
+    #model.load_state_dict(checkpoint['model'])
+    #optimizer.load_state_dict(checkpoint['optimizer'])
 
     (save_path / 'checkpoints').mkdir(parents=True, exist_ok=True)
 
