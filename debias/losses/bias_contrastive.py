@@ -11,11 +11,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 class DebiasSupConLoss(nn.Module):
     def __init__(self, temperature=0.07, contrast_mode='all',
-                 base_temperature=0.07):
+                 base_temperature=0.07, negative_sampling='', beta=0.5):
         super().__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
+        self.negative_sampling = negative_sampling
+        self.beta = beta
+        
 
     def forward(self, features, labels=None, biases=None, mask=None):
         batch_size = features.shape[0]
@@ -29,6 +32,10 @@ class DebiasSupConLoss(nn.Module):
             label_mask = torch.eq(labels, labels.T)
             bias_mask = torch.ne(biases, biases.T)
             mask = label_mask & bias_mask
+            #if torch.any(label_mask & bias_mask):
+            #    print("Bias conflicting sample found!")
+            #else:
+            #    print("No bias conflicting sample!")
             mask = mask.float().cuda()
         else:
             label_mask = torch.eq(labels, labels.T).float().cuda()
@@ -52,7 +59,7 @@ class DebiasSupConLoss(nn.Module):
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
         logits = anchor_dot_contrast - logits_max.detach()
-
+        #logits = anchor_dot_contrast
         # tile mask
         mask = mask.repeat(anchor_count, contrast_count)
 
@@ -64,10 +71,25 @@ class DebiasSupConLoss(nn.Module):
             0
         )
         mask = mask * logits_mask
+        
+        if self.negative_sampling == 'original':
+            negative_mask = logits_mask
+            exp_logits = torch.exp(logits) * negative_mask
+            log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-9)
+        elif self.negative_sampling =='debiased':
+            negative_mask = (~label_mask).repeat(anchor_count, contrast_count).float().cuda() * logits_mask
+            exp_logits = torch.exp(logits) * negative_mask
+            log_prob = logits - torch.log(torch.exp(logits) + exp_logits.sum(1, keepdim=True) + 1e-9)
+        else:
+            negative_mask = (~label_mask).repeat(anchor_count, contrast_count).float().cuda() * logits_mask
+            exp_logits = torch.exp(logits) * negative_mask
 
-        # compute log_prob
-        exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-9)
+            sum_negative_mask = negative_mask.sum(1)
+            sum_negative_mask[sum_negative_mask == 0] = 1
+            
+            mean_neg = (exp_logits).sum(1) / sum_negative_mask
+            neg = ((self.beta * (exp_logits ** 2))/mean_neg.view(-1, 1)).sum(1, keepdim=True)
+            log_prob = logits - torch.log(torch.exp(logits) + neg + 1e-9)
 
         # compute mean of log-likelihood over positive
         sum_mask = mask.sum(1)
@@ -91,10 +113,10 @@ class ContrastiveLoss(nn.Module):
         return self.loss(cont_features, cont_labels, biases=cont_biases)
 
 class BiasContrastiveLoss(nn.Module):
-    def __init__(self, confusion_matrix, temperature=0.07, bb=0):
+    def __init__(self, confusion_matrix, temperature=0.07, bb=0, negative_sampling='hard', beta=0.5):
         super().__init__()
         self.temperature = temperature
-        self.con_loss = DebiasSupConLoss(temperature=temperature)
+        self.con_loss = DebiasSupConLoss(temperature=temperature, negative_sampling=negative_sampling, beta=beta)
         self.confusion_matrix = confusion_matrix.cuda()
         self.min_prob = 1e-9
         self.bb = bb
