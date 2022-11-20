@@ -36,7 +36,13 @@ def parse_option():
     parser.add_argument('--aug', type=int, default=1)
     parser.add_argument('--bb', type=int, default=0)
 
+    parser.add_argument('--negative_sampling', type=str, default='hard')
+    parser.add_argument('--beta', type=float, default=0.5)
+    
+    
     opt = parser.parse_args()
+    assert opt.negative_sampling in ['original', 'debiased', 'hard'], "'negative_sampling' has to be 'original', 'debiased' or 'hard'."
+    
     os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpu)
 
     return opt
@@ -46,7 +52,9 @@ def set_model(train_loader, opt):
     model = FCResNet18().cuda()
     criterion = BiasContrastiveLoss(
         confusion_matrix=train_loader.dataset.confusion_matrix,
-        bb=opt.bb)
+        bb=opt.bb,
+        negative_sampling=opt.negative_sampling,
+        beta=opt.beta)
 
     return model, criterion
 
@@ -122,7 +130,7 @@ def validate(val_loader, model):
 def main():
     opt = parse_option()
 
-    exp_name = f'bc-bb{opt.bb}-utk_face_{opt.task}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}'
+    exp_name = f'bc-bb{opt.bb}-utk_face_{opt.task}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}-neg_sampling_{opt.negative_sampling}-beta{opt.beta}'
     opt.exp_name = exp_name
 
     output_dir = f'exp_results/{exp_name}'
