@@ -12,19 +12,41 @@ from torchvision.datasets.celeba import CelebA
 
 
 class BiasedCelebASplit:
-    def __init__(self, root, split, transform, target_attr, **kwargs):
+    def __init__(self, root, split, transform, target_attr, bias_rate, **kwargs):
+        self.root = root
         self.transform = transform
         self.target_attr = target_attr
-        
+        self.bias_rate = bias_rate
+
+        #Change to using validation split of the actual dataset
+        self.split="valid" if split == "train_valid" else split
         self.celeba = CelebA(
             root=root,
-            split="train" if split == "train_valid" else split,
+            split=self.split,
             target_type="attr",
             transform=transform,
+            download=True
         )
+        
         self.bias_idx = 20
         
-        if target_attr == 'blonde':
+        if target_attr == 'blackhair': 
+            self.target_idx = 8
+            save_path = Path(root) / 'pickles' / f'blackhair-{bias_rate}'
+            if save_path.is_dir():
+                print(f'use existing biased_celeba from {save_path}')
+                self.indices = pickle.load(open(save_path / 'indices.pkl', 'rb'))
+            else:
+                self.indices = self.build_blackhair()
+                print(f'save blackhair indices to {save_path}')
+                save_path.mkdir(parents=True, exist_ok=True)
+                pickle.dump(self.indices, open(save_path / 'indices.pkl', 'wb'))
+            self.indices = self.indices[self.split]
+            self.attr = self.celeba.attr[self.indices, :]
+            self.targets = self.attr[:, self.target_idx]
+            self.biases = self.attr[:, self.bias_idx]          
+            
+        elif target_attr == 'blonde':
             self.target_idx = 9
             if split in ['train', 'train_valid']:
                 save_path = Path(root) / 'pickles' / 'blonde'
@@ -48,34 +70,49 @@ class BiasedCelebASplit:
         else:
             raise AttributeError
             
-        if split in ['train', 'train_valid']:
-            save_path = Path(f'clusters/celeba_rand_indices_{target_attr}.pkl')
-            if not save_path.exists():
-                rand_indices = torch.randperm(len(self.indices))
-                pickle.dump(rand_indices, open(save_path, 'wb'))
-            else:
-                rand_indices = pickle.load(open(save_path, 'rb'))
-            
-            num_total = len(rand_indices)
-            num_train = int(0.8 * num_total)
-            
-            if split == 'train':
-                indices = rand_indices[:num_train]
-            elif split == 'train_valid':
-                indices = rand_indices[num_train:]
-            
-            self.indices = self.indices[indices]
-            self.attr = self.attr[indices]
-
-        self.targets = self.attr[:, self.target_idx]
-        self.biases = self.attr[:, self.bias_idx]
-
         self.confusion_matrix_org, self.confusion_matrix, self.confusion_matrix_by = get_confusion_matrix(num_classes=2,
                                                                                                           targets=self.targets,
                                                                                                           biases=self.biases)
 
         print(f'Use BiasedCelebASplit \n target_attr: {target_attr} split: {split} \n {self.confusion_matrix_org}')
 
+    def build_blackhair(self):
+        rng = np.random.default_rng(42)
+        indices = {'train':np.array([], dtype=int),
+                   'valid':np.array([], dtype=int), 
+                   'test':np.array([], dtype=int)}
+        for split in ['train', 'valid', 'test']:
+            dataset = CelebA(
+                root=self.root,
+                split=split,
+                target_type="attr",
+                transform=self.transform,
+                )
+            biases = dataset.attr[:, self.bias_idx]
+            targets = dataset.attr[:, self.target_idx]
+            num_major = min(sum((biases == 0) & (targets == 0)), sum((biases == 1) & (targets == 1))).item()
+            num = min(sum((biases == 0) & (targets == 0)), 
+                      sum((biases == 0) & (targets == 1)),
+                      sum((biases == 1) & (targets == 0)),
+                      sum((biases == 1) & (targets == 1))).item()
+            for i in (0, 1):
+                major_idx = np.where((biases == i) & (targets == i))[0]
+                minor_idx = np.where((biases == i) & (targets == (i-1)%2))[0]
+                if split == 'train':
+                    num_minor_org = minor_idx.shape[0]
+                    num_minor = int(num_major * (1 - self.bias_rate))
+                    num_minor = min(num_minor, num_minor_org)
+                else: 
+                    num_major = num
+                    num_minor = num
+                rng.shuffle(major_idx)
+                rng.shuffle(minor_idx)     
+                majors = major_idx[:num_major]
+                minors = minor_idx[:num_minor]
+                indices[split] = np.append(indices[split], np.concatenate((majors, minors)))
+            rng.shuffle(indices[split])
+        return indices
+        
     def build_blonde(self):
         biases = self.celeba.attr[:, self.bias_idx]
         targets = self.celeba.attr[:, self.target_idx]
@@ -95,7 +132,7 @@ class BiasedCelebASplit:
 
 
 def get_celeba(root, batch_size, target_attr='blonde', split='train', num_workers=8, aug=True, two_crop=False, ratio=0,
-               img_size=224, given_y=True):
+               img_size=224, given_y=True, bias_rate=0.9):
     logging.info(f'get_celeba - split:{split}, aug: {aug}, given_y: {given_y}, ratio: {ratio}')
     if split == 'eval':
         transform = T.Compose(
@@ -136,6 +173,7 @@ def get_celeba(root, batch_size, target_attr='blonde', split='train', num_worker
         split=split,
         transform=transform,
         target_attr=target_attr,
+        bias_rate=bias_rate
     )
 
     def clip_max_ratio(score):
