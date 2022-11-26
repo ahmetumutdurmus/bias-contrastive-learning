@@ -21,7 +21,7 @@ def parse_option():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', type=str, default='test')
     parser.add_argument('--gpu', type=int, default=0)
-    parser.add_argument('--task', type=str, default='makeup')
+    parser.add_argument('--task', type=str, default='blackhair')
 
     parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--seed', type=int, default=1)
@@ -36,7 +36,11 @@ def parse_option():
     parser.add_argument('--aug', type=int, default=1)
     parser.add_argument('--bb', type=int, default=0)
 
+    parser.add_argument('--negative_sampling', type=str, default='hard')
+    parser.add_argument('--beta', type=float, default=0.5)
+    
     opt = parser.parse_args()
+    assert opt.negative_sampling in ['original', 'debiased', 'hard'], "'negative_sampling' has to be 'original', 'debiased' or 'hard'."
     os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpu)
 
     return opt
@@ -46,7 +50,9 @@ def set_model(train_loader, opt):
     model = FCResNet18().cuda()
     criterion = BiasContrastiveLoss(
         confusion_matrix=train_loader.dataset.confusion_matrix,
-        bb=opt.bb)
+        bb=opt.bb,
+        negative_sampling=opt.negative_sampling,
+        beta=opt.beta)
 
     return model, criterion
 
@@ -128,10 +134,13 @@ def main():
     elif opt.task == "blonde":
         opt.epochs = 10
         opt.ratio = 30
+    elif opt.task =="blackhair":
+        opt.epochs = 10
+        opt.ratio = 30        
     else:
         raise AttributeError()
 
-    exp_name = f'bc-bb{opt.bb}-celeba_{opt.task}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}'
+    exp_name = f'bc-bb{opt.bb}-celeba_{opt.task}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-cbs{opt.cbs}-w{opt.weight}-ratio{opt.ratio}-aug{opt.aug}-seed{opt.seed}-neg_sampling_{opt.negative_sampling}-beta{opt.beta}'
     opt.exp_name = exp_name
 
     output_dir = f'exp_results/{exp_name}'
@@ -177,7 +186,7 @@ def main():
         root,
         batch_size=256,
         target_attr=opt.task,
-        split='valid',
+        split='test',
         aug=False)
 
     model, criterion = set_model(train_loader, opt)
